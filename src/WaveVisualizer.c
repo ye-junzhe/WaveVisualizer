@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "fft.c"
+#include "plug.h"
 #include <raylib.h>
 
 #define ARRAY_LEN(xs) sizeof(xs)/sizeof(xs[0])
@@ -51,6 +52,10 @@ void callback(void *bufferData, unsigned int frames)
 
 int main(void)
 {
+    plug_hello();
+
+    // return 0;
+
     InitWindow(800, 600, "Musializer");
     SetTargetFPS(60);
 
@@ -84,7 +89,7 @@ int main(void)
         float cell_width = (float)w/N; 
         for (size_t i = 0; i < N; ++i) {
             float t = amp(out[i]);//max_amp;
-            DrawRectangle(i*cell_width, h/2- h/2*t, cell_width, h/2*t, BLUE);
+            DrawRectangle(i*cell_width, h/2- h/2*t, cell_width, h/2*t, YELLOW);
         }
         EndDrawing();
     }
