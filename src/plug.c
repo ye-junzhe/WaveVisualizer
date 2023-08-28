@@ -45,6 +45,7 @@ float amp(float complex z)
     return a;
 }
 
+// Create a infinite loop by moving the first frame to the end of the memory
 void callback(void *bufferData, unsigned int frames)
 {
     if (frames > N) frames = N;
@@ -135,7 +136,7 @@ void plug_update(Plug *plug)
         }
         a /= (size_t) f1 - (size_t) f + 1;
         float t = a/max_amp;
-        DrawRectangle(m*cell_width, h/2 - h/2*t, cell_width, h/2*t, BLUE);
+        DrawRectangle(m*cell_width, h/2 - h/2*t, cell_width, h/2*t, YELLOW);
         m += 1;
     }
     EndDrawing();
