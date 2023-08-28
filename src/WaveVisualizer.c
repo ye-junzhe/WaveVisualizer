@@ -1,97 +1,117 @@
 #include <assert.h>
-#include <complex.h>
-#include <math.h>
-#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <complex.h>
+#include <math.h>
 
-#include "fft.c"
-#include "plug.h"
 #include <raylib.h>
+
+#include <dlfcn.h>
+
+#include "plug.h"
 
 #define ARRAY_LEN(xs) sizeof(xs)/sizeof(xs[0])
 
-typedef struct {
-    float left;
-    float right;
-} Frame;
-
-#define N 256
-float in[N];
-float complex out[N];
-float max_amp;
-
-float amp(float complex z) {
-    float a = fabsf(crealf(z));
-    float b = fabsf(cimagf(z));
-    if (a < b) return b;
-    return a;
+char *shift_args(int *argc, char ***argv)
+{
+    assert(*argc > 0);
+    char *result = (**argv);
+    (*argv) += 1;
+    (*argc) -= 1;
+    return result;
 }
 
-// Param1: Buffer holding the data
-// Param2: The data we send into the buffer
-void callback(void *bufferData, unsigned int frames)
+
+// Load and link a DLL to create a handle
+// dlsym() returns the address of the code or data location specified by the null-terminated
+// character string symbol.  Which libraries and bundles are searched depends on the handle parameter.
+
+const char *libplug_file_name = "./bin/libplug.dylib";
+void *libplug = NULL;
+plug_hello_t plug_hello = NULL;
+plug_init_t plug_init = NULL;
+plug_pre_reload_t plug_pre_reload = NULL;
+plug_post_reload_t plug_post_reload = NULL;
+plug_update_t plug_update = NULL;
+Plug plug = {0};
+
+bool reload_libplug(void)
 {
-    if (frames < N) return;
+    if (libplug != NULL) dlclose(libplug);
 
-    Frame *fs = bufferData;
-    for (size_t i = 0; i < frames; ++i) {
-        in[i] = fs[i].left;
+    libplug = dlopen(libplug_file_name, RTLD_NOW);
+    if (libplug == NULL) {
+        fprintf(stderr, "ERROR: could not load %s: %s", libplug_file_name, dlerror());
+        return false;
     }
 
-    fft(in, 1, out, N);
-
-    max_amp = 0.0f;
-    for (size_t i = 0; i < frames; ++i) {
-        float a = amp(out[i]);
-        if (max_amp < a) max_amp = a;
+    plug_hello = dlsym(libplug, "plug_hello");
+    if (plug_hello == NULL) {
+        fprintf(stderr, "ERROR: could not find plug_hello symbol in %s: %s",
+                libplug_file_name, dlerror());
+        return false;
     }
+
+    plug_init = dlsym(libplug, "plug_init");
+    if (plug_init == NULL) {
+        fprintf(stderr, "ERROR: could not find plug_init symbol in %s: %s",
+                libplug_file_name, dlerror());
+        return false;
+    }
+
+    plug_update = dlsym(libplug, "plug_update");
+    if (plug_update == NULL) {
+        fprintf(stderr, "ERROR: could not find plug_update symbol in %s: %s",
+                libplug_file_name, dlerror());
+        return false;
+    }
+
+    plug_pre_reload = dlsym(libplug, "plug_pre_reload");
+    if (plug_pre_reload == NULL) {
+        fprintf(stderr, "ERROR: could not find plug_pre_reload symbol in %s: %s",
+                libplug_file_name, dlerror());
+        return false;
+    }
+
+    plug_post_reload = dlsym(libplug, "plug_post_reload");
+    if (plug_post_reload == NULL) {
+        fprintf(stderr, "ERROR: could not find plug_post_reload symbol in %s: %s",
+                libplug_file_name, dlerror());
+        return false;
+    }
+
+    return true;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
-    plug_hello();
+    if (!reload_libplug()) return 1;
 
-    // return 0;
+    const char *program = shift_args(&argc, &argv);
+
+    // TODO: supply input files via drag&drop
+    if (argc == 0) {
+        fprintf(stderr, "Usage: %s <input>\n", program);
+        fprintf(stderr, "ERROR: no input file is provided\n");
+        return 1;
+    }
+    const char *file_path = shift_args(&argc, &argv);
 
     InitWindow(800, 600, "Musializer");
     SetTargetFPS(60);
-
     InitAudioDevice();
-    Music music = LoadMusicStream("DeepSpaceB.mp3");
-    printf("Framecount: %u\n", music.frameCount);
-    printf("SampleRate: %u\n", music.stream.sampleRate);
-    printf("SampleSize: %u\n", music.stream.sampleSize);
-    printf("Channels  : %u\n", music.stream.channels);
 
-    PlayMusicStream(music);
-    SetMusicVolume(music, 0.5f);
-    AttachAudioStreamProcessor(music.stream, callback);
-
+    plug_init(&plug, file_path);
     while (!WindowShouldClose()) {
-        UpdateMusicStream(music);
-
-        if (IsKeyPressed(KEY_SPACE)) {
-            if (IsMusicStreamPlaying(music)) {
-                PauseMusicStream(music);
-            } else {
-                ResumeMusicStream(music);
-            }
+        if (IsKeyPressed(KEY_R)) {
+            plug_pre_reload(&plug);
+            if (!reload_libplug()) return 1;
+            plug_post_reload(&plug);
         }
-
-        int w = GetRenderWidth();
-        int h = GetRenderHeight();
-
-    BeginDrawing();
-    ClearBackground(CLITERAL(Color) {0x18, 0x18, 0x18, 0xFF});
-        float cell_width = (float)w/N; 
-        for (size_t i = 0; i < N; ++i) {
-            float t = amp(out[i]);//max_amp;
-            DrawRectangle(i*cell_width, h/2- h/2*t, cell_width, h/2*t, YELLOW);
-        }
-        EndDrawing();
+        plug_update(&plug);
     }
+
     return 0;
 }

@@ -3,8 +3,7 @@
 #include <stdio.h>
 #include <complex.h>
 #include <assert.h>
-
-float pi;
+#include "plug.h"
 
 // NOTE: DFT
 void dft(float in[], float complex out[], size_t n) {
@@ -14,7 +13,7 @@ void dft(float in[], float complex out[], size_t n) {
             float t= (float)i/n;
             // If the frequence is part of the input wave,
             // then the output should be upper 0
-            out[f] += in[i]*cexp(2*I*pi*f*t);
+            out[f] += in[i]*cexp(2*I*PI*f*t);
         }
     }
 }
@@ -33,12 +32,13 @@ void fft(float in[], size_t stride, float complex out[], size_t n) {
 
     for (size_t k = 0; k < n/2; ++k) {
         float t = (float)k/n;
-        float complex v = cexp(-2*I*pi*t)*out[k + n/2];
+        float complex v = cexp(-2*I*PI*t)*out[k + n/2];
         float complex e = out[k];
         out[k]       = e + v;
         out[k + n/2] = e - v;
     }
 }
+
 
 // int main()
 // {
