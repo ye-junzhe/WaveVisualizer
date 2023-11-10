@@ -1,143 +1,81 @@
 #include <assert.h>
-#include <raylib.h>
 #include <stdio.h>
-#include <math.h>
+#include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
+#include <complex.h>
+#include <math.h>
+
+#include <raylib.h>
+
+#include <dlfcn.h>
+
 #include "plug.h"
 
-#define N (1<<13)
+#define ARRAY_LEN(xs) sizeof(xs)/sizeof(xs[0])
 
-float in[N];
-float complex out[N];
+const char *libplug_file_name = "./bin/libplug.dylib";
+void *libplug = NULL;
 
-typedef struct {
-    float left;
-    float right;
-} Frame;
+// This technique is called X Macro
+// ## == concatenate
+#ifdef HOTRELOAD
+#define PLUG(name, ...) name##_t *name = NULL;
+#else
+#define PLUG(name, ...) name##_t name;
+#endif
+LIST_OF_PLUGS
+#undef PLUG
 
-// Ported from https://rosettacode.org/wiki/Fast_Fourier_transform#Python
-void fft(float in[], size_t stride, float complex out[], size_t n)
+#ifdef HOTRELOAD
+bool reload_libplug(void)
 {
-    assert(n > 0);
+    if (libplug != NULL) dlclose(libplug);
 
-    if (n == 1) {
-        out[0] = in[0];
-        return;
+    // Load and link a DLL to create a handle
+    libplug = dlopen(libplug_file_name, RTLD_NOW);
+    if (libplug == NULL) {
+        fprintf(stderr, "ERROR: could not load %s: %s", libplug_file_name, dlerror());
+        return false;
     }
 
-    fft(in, stride*2, out, n/2);
-    fft(in + stride, stride*2,  out + n/2, n/2);
-
-    for (size_t k = 0; k < n/2; ++k) {
-        float t = (float)k/n;
-        float complex v = cexp(-2*I*PI*t)*out[k + n/2];
-        float complex e = out[k];
-        out[k]       = e + v;
-        out[k + n/2] = e - v;
+    // dlsym() returns the address of the code or data location specified by the null-terminated
+    // character string symbol.  Which libraries and bundles are searched depends on the handle parameter.
+    #define PLUG(name, ...) \
+    name = dlsym(libplug, #name); \
+    if (name == NULL) { \
+        fprintf(stderr, "ERROR: could not find $s symbol in %s: %s", \
+                #name, libplug_file_name, dlerror()); \
+        return false; \
     }
+    LIST_OF_PLUGS
+    #undef PLUG
+
+    return true;
 }
 
-float amp(float complex z)
+#else
+#define reload_libplug() true
+#endif
+
+int main(void)
 {
-    float a = fabsf(crealf(z));
-    float b = fabsf(cimagf(z));
-    if (a < b) return b;
-    return a;
-}
+    if (!reload_libplug()) return 1;
 
-// Create a infinite loop by moving the first frame to the end of the memory
-void callback(void *bufferData, unsigned int frames)
-{
-    if (frames > N) frames = N;
+    size_t factor = 60;
+    InitWindow(factor*16, factor*9, "WaveVisializer");
+    SetTargetFPS(60);
+    InitAudioDevice();
 
-    Frame *fs = bufferData;
-
-    for (size_t i = 0; i < frames; ++i) {
-        memmove(in, in + 1, (N-1)*sizeof(in[0]));
-        in[N-1] = fs[i].left;
-    }
-}
-
-void plug_hello(void)
-{
-    printf("Hello from Plugin\n");
-}
-
-void plug_init(Plug *plug, const char *file_path)
-{
-    plug->music = LoadMusicStream(file_path);
-    printf("music.frameCount = %u\n", plug->music.frameCount);
-    printf("music.stream.sampleRate = %u\n", plug->music.stream.sampleRate);
-    printf("music.stream.sampleSize = %u\n", plug->music.stream.sampleSize);
-    printf("music.stream.channels = %u\n", plug->music.stream.channels);
-    assert(plug->music.stream.sampleSize == 32);
-    assert(plug->music.stream.channels == 2);
-
-    SetMusicVolume(plug->music, 0.5f);
-    PlayMusicStream(plug->music);
-    AttachAudioStreamProcessor(plug->music.stream, callback);
-}
-
-void plug_pre_reload(Plug *plug)
-{
-    DetachAudioStreamProcessor(plug->music.stream, callback);
-}
-
-void plug_post_reload(Plug *plug)
-{
-    AttachAudioStreamProcessor(plug->music.stream, callback);
-}
-void plug_update(Plug *plug)
-{
-    UpdateMusicStream(plug->music);
-
-    if (IsKeyPressed(KEY_SPACE)) {
-        if (IsMusicStreamPlaying(plug->music)) {
-            PauseMusicStream(plug->music);
-        } else {
-            ResumeMusicStream(plug->music);
+    plug_init();
+    while (!WindowShouldClose()) {
+        if (IsKeyPressed(KEY_R)) {
+            void *state = plug_pre_reload();
+            if (!reload_libplug()) return 1;
+            plug_post_reload(state);
         }
+        plug_update();
     }
 
-    if (IsKeyPressed(KEY_Q)) {
-        StopMusicStream(plug->music);
-        PlayMusicStream(plug->music);
-    }
-
-    int w = GetRenderWidth();
-    int h = GetRenderHeight();
-
-    BeginDrawing();
-    ClearBackground(CLITERAL(Color) {
-        0x18, 0x18, 0x18, 0xFF
-    });
-
-    fft(in, 1, out, N);
-
-    float max_amp = 0.0f;
-    for (size_t i = 0; i < N; ++i) {
-        float a = amp(out[i]);
-        if (max_amp < a) max_amp = a;
-    }
-
-    float step = 1.06;
-    size_t m = 0;
-    for (float f = 20.0f; (size_t) f < N; f *= step) {
-        m += 1;
-    }
-
-    float cell_width = (float)w/m;
-    m = 0;
-    for (float f = 20.0f; (size_t) f < N; f *= step) {
-        float f1 = f*step;
-        float a = 0.0f;
-        for (size_t q = (size_t) f; q < N && q < (size_t) f1; ++q) {
-            a += amp(out[q]);
-        }
-        a /= (size_t) f1 - (size_t) f + 1;
-        float t = a/max_amp;
-        DrawRectangle(m*cell_width, h/2 - h/2*t, cell_width, h/2*t, YELLOW);
-        m += 1;
-    }
-    EndDrawing();
+    return 0;
 }

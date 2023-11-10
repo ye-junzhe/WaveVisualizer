@@ -1,102 +1,194 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
-#include <string.h>
-#include <complex.h>
 #include <math.h>
-
-#include <raylib.h>
-
-#include <dlfcn.h>
-
+#include <string.h>
 #include "plug.h"
 
-#define ARRAY_LEN(xs) sizeof(xs)/sizeof(xs[0])
+#define N (1<<13)
+#define FONT_SIZE 69
 
-char *shift_args(int *argc, char ***argv)
+typedef struct {
+    Music music;
+    Font font;
+    bool error;
+} Plug;
+
+Plug *plug = NULL;
+
+float in[N];
+float complex out[N];
+
+// Ported from https://rosettacode.org/wiki/Fast_Fourier_transform#Python
+void fft(float in[], size_t stride, float complex out[], size_t n)
 {
-    assert(*argc > 0);
-    char *result = (**argv);
-    (*argv) += 1;
-    (*argc) -= 1;
-    return result;
+    assert(n > 0);
+
+    if (n == 1) {
+        out[0] = in[0];
+        return;
+    }
+
+    fft(in, stride*2, out, n/2);
+    fft(in + stride, stride*2,  out + n/2, n/2);
+
+    for (size_t k = 0; k < n/2; ++k) {
+        float t = (float)k/n;
+        float complex v = cexp(-2*I*PI*t)*out[k + n/2];
+        float complex e = out[k];
+        out[k]       = e + v;
+        out[k + n/2] = e - v;
+    }
 }
 
-
-const char *libplug_file_name = "./bin/libplug.dylib";
-void *libplug = NULL;
-
-// This technique is called X Macro
-// ## == concatenate
-#ifdef HOTRELOAD
-#define PLUG(name) name##_t *name = NULL;
-#else
-#define PLUG(name) name##_t name;
-#endif
-LIST_OF_PLUGS
-#undef PLUG
-
-Plug plug = {0};
-
-#ifdef HOTRELOAD
-bool reload_libplug(void)
+float amp(float complex z)
 {
-    if (libplug != NULL) dlclose(libplug);
-
-    // Load and link a DLL to create a handle
-    libplug = dlopen(libplug_file_name, RTLD_NOW);
-    if (libplug == NULL) {
-        fprintf(stderr, "ERROR: could not load %s: %s", libplug_file_name, dlerror());
-        return false;
-    }
-
-    // dlsym() returns the address of the code or data location specified by the null-terminated
-    // character string symbol.  Which libraries and bundles are searched depends on the handle parameter.
-    #define PLUG(name) \
-    name = dlsym(libplug, #name); \
-    if (name == NULL) { \
-        fprintf(stderr, "ERROR: could not find $s symbol in %s: %s", \
-                #name, libplug_file_name, dlerror()); \
-        return false; \
-    }
-    LIST_OF_PLUGS
-    #undef PLUG
-
-    return true;
+    float a = fabsf(crealf(z));
+    float b = fabsf(cimagf(z));
+    if (a < b) return b;
+    return a;
 }
 
-#else
-#define reload_libplug() true
-#endif
-
-int main(int argc, char **argv)
+void callback(void *bufferData, unsigned int frames)
 {
-    if (!reload_libplug()) return 1;
+    // https://cdecl.org/?q=float+%28*fs%29%5B2%5D
+    float (*fs)[plug->music.stream.channels] = bufferData; 
 
-    const char *program = shift_args(&argc, &argv);
-
-    // TODO: supply input files via drag&drop
-    if (argc == 0) {
-        fprintf(stderr, "Usage: %s <input>\n", program);
-        fprintf(stderr, "ERROR: no input file is provided\n");
-        return 1;
+    for (size_t i = 0; i < frames; ++i) {
+        memmove(in, in + 1, (N - 1)*sizeof(in[0]));
+        in[N-1] = fs[i][0];
     }
-    const char *file_path = shift_args(&argc, &argv);
+}
 
-    InitWindow(800, 600, "Musializer");
-    SetTargetFPS(60);
-    InitAudioDevice();
+void plug_init(void)
+{
+    plug = malloc(sizeof(*plug));
+    assert(plug != NULL && "Buy more RAM lol");
+    memset(plug, 0, sizeof(*plug));
 
-    plug_init(&plug, file_path);
-    while (!WindowShouldClose()) {
-        if (IsKeyPressed(KEY_R)) {
-            plug_pre_reload(&plug);
-            if (!reload_libplug()) return 1;
-            plug_post_reload(&plug);
+    plug->font = LoadFontEx("./fonts/Alegreya-Regular.ttf", FONT_SIZE, NULL, 0);
+}
+
+Plug *plug_pre_reload(void)
+{
+    if (IsMusicReady(plug->music)) {
+        DetachAudioStreamProcessor(plug->music.stream, callback);
+    }
+    return plug;
+}
+
+void plug_post_reload(Plug *prev)
+{
+    plug = prev;
+    if (IsMusicReady(plug->music)) {
+        AttachAudioStreamProcessor(plug->music.stream, callback);
+    }
+}
+
+void plug_update(void)
+{
+    if (IsMusicReady(plug->music)) {
+        UpdateMusicStream(plug->music);
+    }
+
+    if (IsKeyPressed(KEY_SPACE)) {
+        if (IsMusicReady(plug->music)) {
+            if (IsMusicStreamPlaying(plug->music)) {
+                PauseMusicStream(plug->music);
+            } else {
+                ResumeMusicStream(plug->music);
+            }
         }
-        plug_update(&plug);
     }
 
-    return 0;
+    if (IsKeyPressed(KEY_Q)) {
+        if (IsMusicReady(plug->music)) {
+            StopMusicStream(plug->music);
+            PlayMusicStream(plug->music);
+        }
+    }
+
+    if (IsFileDropped()) {
+        FilePathList droppedFiles = LoadDroppedFiles();
+        if (droppedFiles.count > 0) {
+            const char *file_path = droppedFiles.paths[0];
+
+            if (IsMusicReady(plug->music)) {
+                StopMusicStream(plug->music);
+                UnloadMusicStream(plug->music);
+            }
+
+            plug->music = LoadMusicStream(file_path);
+
+            if (IsMusicReady(plug->music)) {
+                plug->error = false;
+                printf("music.frameCount = %u\n", plug->music.frameCount);
+                printf("music.stream.sampleRate = %u\n", plug->music.stream.sampleRate);
+                printf("music.stream.sampleSize = %u\n", plug->music.stream.sampleSize);
+                printf("music.stream.channels = %u\n", plug->music.stream.channels);
+                SetMusicVolume(plug->music, 0.5f);
+                AttachAudioStreamProcessor(plug->music.stream, callback);
+                PlayMusicStream(plug->music);
+            } else {
+                plug->error = true;
+            }
+        }
+        UnloadDroppedFiles(droppedFiles);
+    }
+
+    int w = GetRenderWidth();
+    int h = GetRenderHeight();
+
+    BeginDrawing();
+    ClearBackground(CLITERAL(Color) {
+        0x18, 0x18, 0x18, 0xFF
+    });
+
+    if (IsMusicReady(plug->music)) {
+        fft(in, 1, out, N);
+
+        float max_amp = 0.0f;
+        for (size_t i = 0; i < N; ++i) {
+            float a = amp(out[i]);
+            if (max_amp < a) max_amp = a;
+        }
+
+        float step = 1.06;
+        size_t m = 0;
+        for (float f = 20.0f; (size_t) f < N; f *= step) {
+            m += 1;
+        }
+
+        float cell_width = (float)w/m;
+        m = 0;
+        for (float f = 20.0f; (size_t) f < N; f *= step) {
+            float f1 = f*step;
+            float a = 0.0f;
+            for (size_t q = (size_t) f; q < N && q < (size_t) f1; ++q) {
+                a += amp(out[q]);
+            }
+            a /= (size_t) f1 - (size_t) f + 1;
+            float t = a/max_amp;
+            DrawRectangle(m*cell_width, h/2 - h/2*t, cell_width, h/2*t, GREEN);
+            // DrawCircle(m*cell_width, h/2, h/2*t, GREEN);
+            m += 1;
+        }
+    } else {
+        const char *label;
+        Color color;
+        if (plug->error) {
+            label = "Could not load file";
+            color = RED;
+        } else {
+            label = "D r a g & D r o p M u s i c H e r e";
+            color = WHITE;
+        }
+        Vector2 size = MeasureTextEx(plug->font, label, 30, 0);
+        Vector2 position = {
+            w/2 - size.x/2,
+            h/2 - size.y/2,
+        };
+        DrawTextEx(plug->font, label, position, 30, 0, color);
+    }
+    EndDrawing();
 }

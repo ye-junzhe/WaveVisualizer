@@ -1,27 +1,17 @@
 #ifndef PLUG_H_
 #define PLUG_H_
 
-#include <raylib.h>
 #include <complex.h>
-
-// #define N 256
-
-typedef struct {
-    Music music;
-} Plug;
-
-// _t is the convention
-typedef void (plug_hello_t)(void);
-typedef void (plug_init_t)(Plug *plug, const char *file_path);
-typedef void (plug_pre_reload_t)(Plug *plug);
-typedef void (plug_post_reload_t)(Plug *plug);
-typedef void (plug_update_t)(Plug *plug) ;
+#include <raylib.h>
 
 #define LIST_OF_PLUGS \
-    PLUG(plug_hello) \
-    PLUG(plug_init) \
-    PLUG(plug_pre_reload) \
-    PLUG(plug_post_reload) \
-    PLUG(plug_update)
+    PLUG(plug_init, void, void) \
+    PLUG(plug_pre_reload, void*, void) \
+    PLUG(plug_post_reload, void, void*) \
+    PLUG(plug_update, void, void)
 
-#endif // !PLUG_H_
+#define PLUG(name, ret, ...) typedef ret (name##_t)(__VA_ARGS__);
+LIST_OF_PLUGS
+#undef PLUG
+
+#endif // PLUG_H_
